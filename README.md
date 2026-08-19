@@ -72,10 +72,22 @@ Vite loads `.env.development` (used by `npm run dev`) and `.env.production` (use
 VITE_API_URL=http://localhost:5000/api
 
 # client/.env.production
-VITE_API_URL=https://api.your-production-domain.com/api
+VITE_API_URL=https://velora-txp.onrender.com/api
 ```
 
-Update `VITE_API_URL` in `.env.production` to your deployed API URL before building for production.
+## Deployment
+
+Production is pinned to two fixed origins — no other origin is accepted by CORS and no other API base URL ships in the build:
+
+- **Frontend (Vercel):** https://velora-txp.vercel.app
+- **Backend (Render):** https://velora-txp.onrender.com
+
+This is wired through two places:
+
+- `client/.env.production` sets `VITE_API_URL` to the Render URL above; Vite bakes this into the build that `npm run build` produces, which is what Vercel deploys.
+- `render.yaml` sets `CLIENT_URL` to the Vercel URL above; the server only accepts CORS requests (and only issues the refresh-token cookie) for that origin in production. See `server/server.js` and `server/routes/auth.js`.
+
+Local development is unaffected — `client/.env.development` and `server/.env` still point at `localhost`, and `NODE_ENV=development` keeps the refresh cookie on `SameSite=Lax` over plain HTTP.
 
 ## Seed Database
 
