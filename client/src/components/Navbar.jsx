@@ -9,6 +9,7 @@ import { useWishlist } from "../context/WishlistContext";
 import { useToast } from "../context/ToastContext";
 import IconButton from "./ui/IconButton";
 import SearchBar from "./SearchBar";
+import Logo from "./Logo";
 
 export default function Navbar() {
   const { user, logout, setAuthModal } = useAuth();
@@ -41,7 +42,7 @@ export default function Navbar() {
     <header className="navbar">
       <div className="navbar-container">
         <Link to="/" className="navbar-logo">
-          <span className="logo-mark">V</span>
+          <span className="logo-mark"><Logo size={20} /></span>
           <span className="logo-text">Velora</span>
         </Link>
         <SearchBar />

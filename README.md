@@ -8,7 +8,7 @@ A full-stack Amazon/Flipkart-style ecommerce web application built with React (V
 - **Product Listing** — Search, filters (price, category, rating, brand, stock, discount), sort
 - **Product Detail** — Image gallery, specs, reviews with purchase eligibility
 - **Cart & Checkout** — Server-side cart, mock payment flow, orders in MongoDB
-- **Auth** — Customer/Seller signup, login, password reset (modal-based, no login wall for browsing)
+- **Auth** — Customer/Seller signup, login, password reset (modal-based, no login wall for browsing); short-lived access tokens with httpOnly-cookie refresh tokens, rotated on every use
 - **Seller Dashboard** — Product CRUD with Cloudinary image upload
 - **Customer Dashboard** — Order history
 - **Theme** — Light/dark mode with sessionStorage persistence
@@ -41,17 +41,41 @@ npm install
 
 ## Environment Variables
 
+### Server
+
 Create `server/.env` from `.env.example`:
 
 ```
-MONGODB_URI=mongodb://127.0.0.1:27017/velora
-JWT_SECRET=your-super-secret-jwt-key
-JWT_EXPIRES_IN=7d
+NODE_ENV=development
 PORT=5000
+MONGODB_URI=mongodb://127.0.0.1:27017/velora
+CLIENT_URL=http://localhost:5172
+
+JWT_SECRET=your-super-secret-jwt-key
+JWT_ACCESS_EXPIRES_IN=15m
+JWT_REFRESH_EXPIRES_IN=30d
+
 CLOUDINARY_CLOUD_NAME=your_cloud_name
 CLOUDINARY_API_KEY=your_api_key
 CLOUDINARY_API_SECRET=your_api_secret
 ```
+
+- `CLIENT_URL` is the **only** origin CORS accepts — set it to your deployed frontend URL in production.
+- `NODE_ENV=production` switches the refresh-token cookie to `Secure` + `SameSite=None` (required for cross-site cookies over HTTPS); in development it uses `SameSite=Lax` over plain HTTP.
+
+### Client
+
+Vite loads `.env.development` (used by `npm run dev`) and `.env.production` (used by `npm run build`) automatically:
+
+```
+# client/.env.development
+VITE_API_URL=http://localhost:5000/api
+
+# client/.env.production
+VITE_API_URL=https://api.your-production-domain.com/api
+```
+
+Update `VITE_API_URL` in `.env.production` to your deployed API URL before building for production.
 
 ## Seed Database
 
@@ -73,14 +97,14 @@ cd server
 npm start
 ```
 
-**Terminal 2 — React dev server (port 5173):**
+**Terminal 2 — React dev server (port 5172):**
 
 ```bash
 cd client
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173)
+Open [http://localhost:5172](http://localhost:5172)
 
 ## Demo Accounts
 
@@ -104,6 +128,8 @@ All accounts use password: **`password123`**
 | POST | /api/auth/signup | Create account (customer or seller) |
 | POST | /api/auth/login | Sign in |
 | GET | /api/auth/me | Current user |
+| POST | /api/auth/refresh | Exchange refresh cookie for a new access token |
+| POST | /api/auth/logout | Revoke the refresh token and clear the cookie |
 | POST | /api/auth/forgot-password | Request reset token (logged to console) |
 | POST | /api/auth/reset-password | Reset password |
 | GET | /api/products | List/search/filter products |

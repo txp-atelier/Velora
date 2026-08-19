@@ -9,6 +9,7 @@ import Input from "./ui/Input";
 import Button from "./ui/Button";
 import RadioCard from "./ui/RadioCard";
 import PasswordStrength from "./ui/PasswordStrength";
+import Logo from "./Logo";
 
 const emptyForm = { name: "", email: "", password: "", confirmPassword: "", role: "customer" };
 const PASSWORD_HINT = "At least 8 characters, with a letter and a number.";
@@ -129,7 +130,7 @@ export default function AuthModal() {
   return (
     <Modal open={!!authModal} onClose={close} labelledBy="auth-modal-title">
       <div className="modal-brand">
-        <span className="logo-mark">V</span>
+        <span className="logo-mark"><Logo size={22} /></span>
         <span className="logo-text">Velora</span>
       </div>
       <h2 id="auth-modal-title">{titles[currentMode]}</h2>

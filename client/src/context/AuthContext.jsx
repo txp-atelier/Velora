@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { authApi } from "../services/api";
+import { authApi, setAccessToken } from "../services/api";
 
 const AuthContext = createContext();
 
@@ -9,14 +9,15 @@ export const AuthProvider = ({ children }) => {
   const [authModal, setAuthModal] = useState(null);
   const [pendingAction, setPendingAction] = useState(null);
 
+  // No access token persists across reloads — it lives in memory only.
+  // On load, silently exchange the httpOnly refresh cookie (if any) for one.
   const loadUser = useCallback(async () => {
-    const token = localStorage.getItem("velora_token");
-    if (!token) { setLoading(false); return; }
     try {
+      await authApi.refresh();
       const { user: u } = await authApi.me();
       setUser(u);
     } catch {
-      localStorage.removeItem("velora_token");
+      setAccessToken(null);
     } finally {
       setLoading(false);
     }
@@ -26,7 +27,7 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const { user: u, token } = await authApi.login({ email, password });
-    localStorage.setItem("velora_token", token);
+    setAccessToken(token);
     setUser(u);
     setAuthModal(null);
     if (pendingAction) { pendingAction(); setPendingAction(null); }
@@ -35,15 +36,16 @@ export const AuthProvider = ({ children }) => {
 
   const signup = async (data) => {
     const { user: u, token } = await authApi.signup(data);
-    localStorage.setItem("velora_token", token);
+    setAccessToken(token);
     setUser(u);
     setAuthModal(null);
     if (pendingAction) { pendingAction(); setPendingAction(null); }
     return u;
   };
 
-  const logout = () => {
-    localStorage.removeItem("velora_token");
+  const logout = async () => {
+    try { await authApi.logout(); } catch { /* cookie may already be gone */ }
+    setAccessToken(null);
     setUser(null);
   };
 

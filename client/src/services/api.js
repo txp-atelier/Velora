@@ -1,19 +1,53 @@
-const API_BASE = "http://localhost:5000/api";
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
-const getToken = () => localStorage.getItem("velora_token");
+// The access token lives in memory only (never localStorage) — the refresh
+// token that replaces it on expiry is a separate httpOnly cookie the server
+// manages, so it's never reachable from JS in the first place.
+let accessToken = null;
+export const getAccessToken = () => accessToken;
+export const setAccessToken = (token) => { accessToken = token; };
 
-const request = async (path, options = {}) => {
+const NO_REFRESH_RETRY = new Set(["/auth/login", "/auth/signup", "/auth/refresh"]);
+
+let refreshPromise = null;
+const refreshAccessToken = () => {
+  if (!refreshPromise) {
+    refreshPromise = fetch(`${API_BASE}/auth/refresh`, { method: "POST", credentials: "include" })
+      .then(async (res) => {
+        if (!res.ok) throw new Error("refresh failed");
+        const data = await res.json();
+        accessToken = data.token;
+        return data.token;
+      })
+      .finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
+};
+
+const rawRequest = (path, options) => {
   const headers = { ...options.headers };
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
   if (options.body && !(options.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  return fetch(`${API_BASE}${path}`, { ...options, headers, credentials: "include" });
+};
+
+const request = async (path, options = {}) => {
+  let res = await rawRequest(path, options);
+  if (res.status === 401 && !NO_REFRESH_RETRY.has(path)) {
+    try {
+      await refreshAccessToken();
+      res = await rawRequest(path, options);
+    } catch {
+      accessToken = null;
+    }
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(data.error || "Something went wrong. Please try again.");
     err.fields = data.fields || null;
+    err.status = res.status;
     throw err;
   }
   return data;
@@ -23,6 +57,8 @@ export const authApi = {
   signup: (body) => request("/auth/signup", { method: "POST", body: JSON.stringify(body) }),
   login: (body) => request("/auth/login", { method: "POST", body: JSON.stringify(body) }),
   me: () => request("/auth/me"),
+  refresh: () => request("/auth/refresh", { method: "POST" }),
+  logout: () => request("/auth/logout", { method: "POST" }),
   forgotPassword: (email) =>
     request("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
   resetPassword: (body) =>
@@ -72,7 +108,7 @@ export const uploadApi = {
   file: async (file, onProgress) => {
     const form = new FormData();
     form.append("file", file);
-    const token = getToken();
+    const token = accessToken;
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `${API_BASE}/upload`);
