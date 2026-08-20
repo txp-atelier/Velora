@@ -1,17 +1,25 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { QRCodeCanvas } from "qrcode.react";
 import {
   CheckCircle, Check, CreditCard, Smartphone, User, MapPin,
-  Phone, Home, Landmark, Building2, Flag, Hash, ShoppingBag,
+  Phone, Home, Landmark, Building2, Flag, Hash, ShoppingBag, Share2, Copy,
 } from "lucide-react";
 import { useCart } from "../context/CartContext";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
 import { ordersApi } from "../services/api";
 import { formatINR, getProductId } from "../utils/format";
-import { isValidName, isValidPhone, isValidPincode } from "../utils/validation";
+import {
+  isValidName, isValidPhone, isValidPincode, isValidUpiId,
+  isValidCardNumber, isValidExpiry, isValidCvv,
+} from "../utils/validation";
 import Input from "../components/ui/Input";
 import Button from "../components/ui/Button";
 import RadioCard from "../components/ui/RadioCard";
+
+const MERCHANT_UPI_ID = "velora@upi";
+const MERCHANT_NAME = "Velora";
 
 const ADDRESS_RULES = {
   fullName: { test: isValidName, message: "Enter a valid full name (letters only)." },
@@ -22,6 +30,32 @@ const ADDRESS_RULES = {
   pincode: { test: isValidPincode, message: "Enter a valid 6-digit PIN code." },
 };
 
+const CARD_RULES = {
+  number: { test: isValidCardNumber, message: "Enter a valid card number." },
+  expiry: { test: isValidExpiry, message: "Enter a valid, non-expired date (MM/YY)." },
+  cvv: { test: isValidCvv, message: "Enter a valid 3-digit CVV." },
+};
+
+// Auto-inserts the "/" as the shopper types and keeps the month in 01–12 —
+// the same live-formatting real checkout pages use, so a typo can't even
+// be entered rather than being caught only after the fact.
+const formatExpiryInput = (raw) => {
+  let digits = raw.replace(/\D/g, "").slice(0, 4);
+  if (digits.length === 1 && Number(digits) > 1) digits = `0${digits}`;
+  if (digits.length >= 2) {
+    const mm = Math.min(Math.max(Number(digits.slice(0, 2)), 1), 12).toString().padStart(2, "0");
+    digits = mm + digits.slice(2);
+  }
+  return digits.length > 2 ? `${digits.slice(0, 2)}/${digits.slice(2)}` : digits;
+};
+
+const formatCardNumberInput = (raw) => {
+  const digits = raw.replace(/\D/g, "").slice(0, 19);
+  return digits.replace(/(\d{4})(?=\d)/g, "$1 ");
+};
+
+const formatCvvInput = (raw) => raw.replace(/\D/g, "").slice(0, 3);
+
 const CHECKOUT_STEPS = [
   { n: 1, label: "Shipping" },
   { n: 2, label: "Summary" },
@@ -31,12 +65,16 @@ const CHECKOUT_STEPS = [
 export default function Checkout() {
   const { items, clearCart } = useCart();
   const { user } = useAuth();
+  const { showToast } = useToast();
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [paymentMethod, setPaymentMethod] = useState("card");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [orderId, setOrderId] = useState(null);
+  const [upiId, setUpiId] = useState("");
+  const [upiTouched, setUpiTouched] = useState(false);
+  const qrCanvasRef = useRef(null);
   const [address, setAddress] = useState({
     fullName: user?.name || "",
     phone: "",
@@ -49,6 +87,7 @@ export default function Checkout() {
   const [touched, setTouched] = useState({});
   const [serverFields, setServerFields] = useState({});
   const [card, setCard] = useState({ number: "", expiry: "", cvv: "" });
+  const [cardTouched, setCardTouched] = useState({});
   const [pincodeStatus, setPincodeStatus] = useState("idle"); // idle | loading | found | notfound
 
   // Auto-fill city/state from the PIN code so shoppers don't have to type
@@ -122,6 +161,72 @@ export default function Checkout() {
     e.preventDefault();
     setTouched(Object.fromEntries(Object.keys(ADDRESS_RULES).map((k) => [k, true])));
     if (isAddressValid()) setStep(2);
+  };
+
+  const setCardField = (key, formatter) => (e) => setCard((c) => ({ ...c, [key]: formatter(e.target.value) }));
+  const markCardTouched = (key) => setCardTouched((t) => ({ ...t, [key]: true }));
+  const cardFieldValid = (key) => CARD_RULES[key].test(card[key] || "");
+  const cardErrorFor = (key) => (cardTouched[key] && !cardFieldValid(key) ? CARD_RULES[key].message : undefined);
+  const isCardValid = () => Object.keys(CARD_RULES).every(cardFieldValid);
+
+  // UPI ID is optional — the QR code above is a valid way to pay too (e.g.
+  // a friend scans it), so only block submission if the shopper actually
+  // typed something and it doesn't look like a real VPA.
+  const isUpiValid = () => !upiId.trim() || isValidUpiId(upiId);
+
+  const handlePlaceOrderClick = () => {
+    if (paymentMethod === "card") {
+      setCardTouched({ number: true, expiry: true, cvv: true });
+      if (!isCardValid()) return;
+    } else if (paymentMethod === "upi") {
+      setUpiTouched(true);
+      if (!isUpiValid()) return;
+    }
+    placeOrder();
+  };
+
+  // Standard UPI deep link — any UPI app can scan/open this to pay the
+  // order amount directly, so it can be shared with someone paying for you.
+  const upiLink = `upi://pay?pa=${encodeURIComponent(MERCHANT_UPI_ID)}&pn=${encodeURIComponent(MERCHANT_NAME)}&am=${subtotal}&cu=INR&tn=${encodeURIComponent(`Velora order - ${items.length} item(s)`)}`;
+
+  const getQrPngBlob = () =>
+    new Promise((resolve) => {
+      const canvas = qrCanvasRef.current;
+      if (!canvas) return resolve(null);
+      canvas.toBlob(resolve, "image/png");
+    });
+
+  const handleShareQr = async () => {
+    try {
+      const blob = await getQrPngBlob();
+      const file = blob ? new File([blob], "velora-upi-qr.png", { type: "image/png" }) : null;
+      if (file && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: "Velora payment QR",
+          text: `Pay ${formatINR(subtotal)} via UPI for my Velora order.`,
+        });
+      } else if (navigator.share) {
+        await navigator.share({
+          title: "Velora payment QR",
+          text: `Pay ${formatINR(subtotal)} via UPI for my Velora order: ${upiLink}`,
+        });
+      } else {
+        await navigator.clipboard.writeText(upiLink);
+        showToast("UPI payment link copied — share it with your friend!");
+      }
+    } catch (err) {
+      if (err?.name !== "AbortError") showToast("Couldn't share the QR — try copying the link instead.");
+    }
+  };
+
+  const handleCopyUpiLink = async () => {
+    try {
+      await navigator.clipboard.writeText(upiLink);
+      showToast("UPI payment link copied to clipboard!");
+    } catch {
+      showToast("Couldn't copy the link.");
+    }
   };
 
   const placeOrder = async () => {
@@ -324,19 +429,101 @@ export default function Checkout() {
               </div>
               {paymentMethod === "card" && (
                 <div className="card-form">
-                  <Input label="Card number" placeholder="4111 1111 1111 1111" value={card.number} onChange={(e) => setCard({ ...card, number: e.target.value })} />
+                  <Input
+                    label="Card number"
+                    placeholder="4111 1111 1111 1111"
+                    inputMode="numeric"
+                    maxLength={23}
+                    value={card.number}
+                    onChange={setCardField("number", formatCardNumberInput)}
+                    onBlur={() => markCardTouched("number")}
+                    error={cardErrorFor("number")}
+                    success={cardTouched.number && cardFieldValid("number")}
+                    hint={!cardTouched.number ? "Demo mode — try test card 4111 1111 1111 1111." : undefined}
+                    required
+                  />
                   <div className="card-row">
-                    <Input label="Expiry" placeholder="MM/YY" value={card.expiry} onChange={(e) => setCard({ ...card, expiry: e.target.value })} />
-                    <Input label="CVV" placeholder="123" value={card.cvv} onChange={(e) => setCard({ ...card, cvv: e.target.value })} />
+                    <Input
+                      label="Expiry"
+                      placeholder="MM/YY"
+                      inputMode="numeric"
+                      maxLength={5}
+                      value={card.expiry}
+                      onChange={setCardField("expiry", formatExpiryInput)}
+                      onBlur={() => markCardTouched("expiry")}
+                      error={cardErrorFor("expiry")}
+                      success={cardTouched.expiry && cardFieldValid("expiry")}
+                      required
+                    />
+                    <Input
+                      label="CVV"
+                      placeholder="123"
+                      inputMode="numeric"
+                      maxLength={3}
+                      value={card.cvv}
+                      onChange={setCardField("cvv", formatCvvInput)}
+                      onBlur={() => markCardTouched("cvv")}
+                      error={cardErrorFor("cvv")}
+                      success={cardTouched.cvv && cardFieldValid("cvv")}
+                      required
+                    />
                   </div>
                 </div>
               )}
               {paymentMethod === "upi" && (
-                <p className="text-secondary">Enter any UPI ID — demo mode accepts all inputs.</p>
+                <div className="upi-panel">
+                  <div className="upi-qr-card">
+                    <div className="upi-qr-code">
+                      <QRCodeCanvas ref={qrCanvasRef} value={upiLink} size={168} level="M" bgColor="#ffffff" fgColor="#0F172A" />
+                    </div>
+                    <div className="upi-qr-meta">
+                      <p className="upi-qr-title">Scan to pay {formatINR(subtotal)}</p>
+                      <p className="upi-qr-hint">
+                        Open any UPI app and scan this code, or share it with a friend or
+                        family member who's paying on your behalf.
+                      </p>
+                      <div className="upi-qr-actions">
+                        <Button type="button" variant="outline" size="sm" onClick={handleShareQr}>
+                          <Share2 size={14} /> Share QR
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={handleCopyUpiLink}>
+                          <Copy size={14} /> Copy link
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="upi-divider"><span>or pay with your UPI ID</span></div>
+
+                  <Input
+                    label="Your UPI ID"
+                    icon={Smartphone}
+                    placeholder="yourname@bank"
+                    value={upiId}
+                    onChange={(e) => setUpiId(e.target.value)}
+                    onBlur={() => setUpiTouched(true)}
+                    error={upiTouched && !isUpiValid() ? "Enter a valid UPI ID, e.g. name@okhdfcbank." : undefined}
+                    success={upiTouched && upiId.trim() && isUpiValid()}
+                    hint="Optional if you're paying via the QR code above."
+                  />
+                </div>
               )}
               <div className="checkout-nav">
                 <Button variant="outline" onClick={() => setStep(2)}>Back</Button>
-                <Button variant="accent" onClick={placeOrder} loading={loading}>
+                <Button
+                  variant="accent" onClick={handlePlaceOrderClick} loading={loading}
+                  disabled={
+                    (paymentMethod === "card" && Object.keys(cardTouched).length > 0 && !isCardValid()) ||
+                    (paymentMethod === "upi" && upiTouched && !isUpiValid())
+                  }
+                  title={
+                    paymentMethod === "card" && Object.keys(cardTouched).length > 0 && !isCardValid()
+                      ? "Fix the highlighted card details to continue"
+                      : paymentMethod === "upi" && upiTouched && !isUpiValid()
+                        ? "Fix your UPI ID, or leave it blank to pay via the QR code"
+                        : undefined
+                  }
+                >
                   {loading ? "Placing order…" : `Pay ${formatINR(subtotal)}`}
                 </Button>
               </div>

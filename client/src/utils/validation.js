@@ -5,11 +5,53 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^[6-9]\d{9}$/; // Indian mobile: 10 digits, starts 6-9
 const PINCODE_RE = /^\d{6}$/; // Indian PIN code: 6 digits
 const NAME_RE = /^[a-zA-Z][a-zA-Z\s.'-]{1,59}$/; // letters/spaces/.'- only, 2-60 chars
+const UPI_ID_RE = /^[\w.+-]{2,256}@[a-zA-Z]{2,64}$/; // VPA format: handle@bank
 
 export const isValidEmail = (email) => EMAIL_RE.test((email || "").trim());
 export const isValidPhone = (phone) => PHONE_RE.test((phone || "").trim());
 export const isValidPincode = (pincode) => PINCODE_RE.test((pincode || "").trim());
 export const isValidName = (name) => NAME_RE.test((name || "").trim());
+export const isValidUpiId = (upiId) => UPI_ID_RE.test((upiId || "").trim());
+
+// Same checksum every real card network runs client-side before a charge
+// is even attempted — catches typos (transposed/mistyped digits) that a
+// plain length check would let through.
+const luhnCheck = (digits) => {
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let n = Number(digits[i]);
+    if (double) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    double = !double;
+  }
+  return sum % 10 === 0;
+};
+
+export const isValidCardNumber = (number) => {
+  const digits = (number || "").replace(/\s+/g, "");
+  return /^\d{13,19}$/.test(digits) && luhnCheck(digits);
+};
+
+/** MM/YY, a real calendar month, and not already expired (current month still counts). */
+export const isValidExpiry = (expiry) => {
+  const m = /^(\d{2})\/(\d{2})$/.exec((expiry || "").trim());
+  if (!m) return false;
+  const month = Number(m[1]);
+  if (month < 1 || month > 12) return false;
+  const year = 2000 + Number(m[2]);
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+  if (year < currentYear) return false;
+  if (year === currentYear && month < currentMonth) return false;
+  return true;
+};
+
+export const isValidCvv = (cvv) => /^\d{3}$/.test((cvv || "").trim());
 
 export const isStrongPassword = (password) =>
   !!password &&
